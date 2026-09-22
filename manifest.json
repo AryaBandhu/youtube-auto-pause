@@ -2,11 +2,14 @@
   "manifest_version": 3,
   "name": "YouTube Auto-Pause",
   "version": "1.0.0",
-  "description": "Automatically pauses YouTube videos when the tab is inactive and resumes playback when you return.",
+  "description": "Automatically pauses YouTube videos when switching tabs or browser windows, and resumes playback when you return.",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
+  },
+  "background": {
+    "service_worker": "background.js"
   },
   "content_scripts": [
     {

@@ -17,8 +17,8 @@
 }
 
 body {
-  width: 300px;
-  font-family: 'Inter', system-ui, sans-serif;
+  width: 320px;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background: var(--bg);
   color: var(--text-primary);
   overflow: hidden;
@@ -90,12 +90,12 @@ body {
 }
 
 .toggle-label {
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 600;
 }
 
 .toggle-desc {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--text-muted);
   transition: color var(--transition);
 }
@@ -156,30 +156,31 @@ input:checked + .slider::before {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
-  padding: 12px 8px;
+  justify-content: center;
+  gap: 4px;
+  padding: 10px 4px;
 }
 
 .stat-value {
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 700;
   line-height: 1;
   letter-spacing: -0.5px;
 }
 
 .stat-label {
-  font-size: 10.5px;
+  font-size: 9.5px;
   color: var(--text-muted);
   text-align: center;
   font-weight: 500;
   text-transform: uppercase;
-  letter-spacing: 0.4px;
+  letter-spacing: 0.3px;
 }
 
 .stat-divider {
   width: 1px;
   background: var(--border);
-  margin: 10px 0;
+  margin: 8px 0;
 }
 
 /* ── Info Box ── */
@@ -191,9 +192,9 @@ input:checked + .slider::before {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 12px;
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--text-muted);
-  line-height: 1.5;
+  line-height: 1.45;
 }
 
 .info-icon {

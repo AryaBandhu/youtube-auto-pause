@@ -4,9 +4,6 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>YouTube Auto-Pause</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
@@ -26,43 +23,62 @@
         </svg>
       </div>
       <div class="header-text">
-        <h1 class="title">Auto-Pause</h1>
-        <p class="subtitle">YouTube Tab Manager</p>
+        <h1 class="title">Auto-Pause Pro</h1>
+        <p class="subtitle">YouTube Tab & Window Manager</p>
       </div>
     </div>
 
-    <!-- Toggle -->
+    <div class="divider"></div>
+
+    <!-- Toggle 1: Auto-pause -->
     <div class="toggle-row">
       <div class="toggle-info">
-        <span class="toggle-label">Pause on tab switch</span>
+        <span class="toggle-label">Auto-pause on switch</span>
         <span class="toggle-desc" id="status-text">Loading…</span>
       </div>
-      <label class="switch" id="toggle-label">
+      <label class="switch">
         <input type="checkbox" id="toggle" checked />
         <span class="slider"></span>
       </label>
     </div>
 
-    <!-- Stats -->
+    <!-- Toggle 2: Picture-in-Picture Control -->
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <span class="toggle-label">Picture-in-Picture</span>
+        <span class="toggle-desc" id="pip-status-text">OFF — Allow PiP</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="pip-toggle" />
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <!-- Stats Grid -->
     <div class="stats-row">
-      <div class="stat" id="stat-videos">
-        <span class="stat-value" id="video-count">—</span>
-        <span class="stat-label">Videos detected</span>
+      <div class="stat" id="stat-videos-playing">
+        <span class="stat-value" id="playing-count">—</span>
+        <span class="stat-label">Videos Playing</span>
+      </div>
+      <div class="stat-divider"></div>
+      <div class="stat" id="stat-videos-total">
+        <span class="stat-value" id="total-count">—</span>
+        <span class="stat-label">Videos Detected</span>
       </div>
       <div class="stat-divider"></div>
       <div class="stat">
         <span class="stat-value" id="stat-state">—</span>
-        <span class="stat-label">Extension state</span>
+        <span class="stat-label">Status</span>
       </div>
     </div>
 
-    <!-- How it works -->
+    <!-- Info Box -->
     <div class="info-box">
       <svg width="14" height="14" viewBox="0 0 16 16" fill="none" class="info-icon">
         <circle cx="8" cy="8" r="7.5" stroke="currentColor"/>
         <path d="M8 7v4M8 5.5V5" stroke="currentColor" stroke-linecap="round"/>
       </svg>
-      <span>Videos paused by you won't be auto-resumed.</span>
+      <span>Videos manually paused by you will remain paused upon return.</span>
     </div>
   </div>
 

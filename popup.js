@@ -1,77 +1,127 @@
 /**
- * popup.js — Handles the extension popup UI logic.
+ * popup.js — Extension Popup UI Manager
  *
- * - Reads the current enabled state from chrome.storage.sync
- * - Queries the active YouTube tab for live video count
- * - Updates the toggle and stats displays
- * - Persists toggle changes to storage and messages the content script
+ * Interacts with chrome.storage.local and current YouTube tab to display:
+ * - Auto-pause toggle state
+ * - Picture-in-Picture (PiP) exit/block toggle state
+ * - Count of currently playing videos
+ * - Total videos detected on current YouTube page
+ * Safe to open on any web page (YouTube or non-YouTube).
  */
 
-const toggle     = document.getElementById('toggle');
-const statusText = document.getElementById('status-text');
-const videoCount = document.getElementById('video-count');
-const statState  = document.getElementById('stat-state');
+'use strict';
 
-// ─── Helpers ──────────────────────────────────────────────────────────────
+const toggle        = document.getElementById('toggle');
+const statusText    = document.getElementById('status-text');
+const pipToggle     = document.getElementById('pip-toggle');
+const pipStatusText = document.getElementById('pip-status-text');
+const playingCount  = document.getElementById('playing-count');
+const totalCount    = document.getElementById('total-count');
+const statState     = document.getElementById('stat-state');
 
-function setUI(enabled) {
+// ─── UI Helpers ───────────────────────────────────────────────────────────
+
+function setPauseUI(enabled) {
   toggle.checked = enabled;
 
   if (enabled) {
-    statusText.textContent = 'Active — pauses on tab switch';
+    statusText.textContent = 'Active — pauses on switch';
     statusText.className   = 'toggle-desc state-active';
     statState.textContent  = 'ON';
     statState.className    = 'stat-value state-active';
   } else {
-    statusText.textContent = 'Disabled — videos play normally';
+    statusText.textContent = 'Disabled — plays normally';
     statusText.className   = 'toggle-desc state-inactive';
     statState.textContent  = 'OFF';
     statState.className    = 'stat-value state-disabled';
   }
 }
 
-/** Send a message to the content script in the active YouTube tab. */
-async function sendToYouTubeTab(message) {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab || !tab.url?.includes('youtube.com')) return null;
+function setPiPUI(blockPiP) {
+  pipToggle.checked = blockPiP;
 
+  if (blockPiP) {
+    pipStatusText.textContent = 'ON — Exit & block PiP on leave';
+    pipStatusText.className   = 'toggle-desc state-active';
+  } else {
+    pipStatusText.textContent = 'OFF — Allow PiP normally';
+    pipStatusText.className   = 'toggle-desc state-disabled';
+  }
+}
+
+/** Safely query active tab and fetch status from content script if on YouTube */
+async function queryActiveYouTubeTab() {
   try {
-    return await chrome.tabs.sendMessage(tab.id, message);
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || !tab.url || !tab.url.includes('youtube.com')) {
+      return null;
+    }
+
+    return await chrome.tabs.sendMessage(tab.id, { type: 'GET_STATUS' });
   } catch {
-    // Content script not injected yet (e.g. page just opened)
+    // Content script not ready or non-YouTube tab
     return null;
   }
 }
 
-// ─── Init ─────────────────────────────────────────────────────────────────
+// ─── Initialization ───────────────────────────────────────────────────────
 
 async function init() {
-  // Load persisted preference
-  const { enabled = true } = await chrome.storage.sync.get('enabled');
-  setUI(enabled);
+  // Load persisted toggle preferences
+  const { enabled = true, blockPiP = false } = await chrome.storage.local.get(['enabled', 'blockPiP']);
+  setPauseUI(enabled);
+  setPiPUI(blockPiP);
 
-  // Query live status from content script
-  const status = await sendToYouTubeTab({ type: 'GET_STATUS' });
+  // Fetch live status from active tab
+  const status = await queryActiveYouTubeTab();
   if (status) {
-    videoCount.textContent = status.videoCount;
-    setUI(status.enabled);
+    playingCount.textContent = status.playingVideos !== undefined ? status.playingVideos : '0';
+    totalCount.textContent   = status.totalVideos !== undefined ? status.totalVideos : '0';
+    if (status.enabled !== undefined) setPauseUI(status.enabled);
+    if (status.blockPiP !== undefined) setPiPUI(status.blockPiP);
   } else {
-    videoCount.textContent = '—';
+    playingCount.textContent = '—';
+    totalCount.textContent   = '—';
   }
 }
 
-// ─── Toggle handler ───────────────────────────────────────────────────────
+// ─── Event Listeners ───────────────────────────────────────────────────────
 
 toggle.addEventListener('change', async () => {
   const enabled = toggle.checked;
-  setUI(enabled);
+  setPauseUI(enabled);
 
-  // Persist
-  await chrome.storage.sync.set({ enabled });
+  // Persist preference to storage (broadcasts to content scripts automatically)
+  await chrome.storage.local.set({ enabled });
 
-  // Inform content script
-  await sendToYouTubeTab({ type: 'SET_ENABLED', enabled });
+  // Explicitly inform current tab if available
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id && tab.url?.includes('youtube.com')) {
+      await chrome.tabs.sendMessage(tab.id, { type: 'SET_ENABLED', enabled });
+    }
+  } catch {
+    // Tab messaging failure handled silently
+  }
 });
 
-// ─── Boot ─────────────────────────────────────────────────────────────────
+pipToggle.addEventListener('change', async () => {
+  const blockPiP = pipToggle.checked;
+  setPiPUI(blockPiP);
+
+  // Persist preference to storage
+  await chrome.storage.local.set({ blockPiP });
+
+  // Explicitly inform current tab if available
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id && tab.url?.includes('youtube.com')) {
+      await chrome.tabs.sendMessage(tab.id, { type: 'SET_BLOCK_PIP', blockPiP });
+    }
+  } catch {
+    // Tab messaging failure handled silently
+  }
+});
+
+// Boot popup
 init();
