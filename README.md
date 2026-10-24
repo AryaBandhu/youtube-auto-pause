@@ -142,14 +142,21 @@ All settings are managed through the extension popup and are persisted in `chrom
 - **OFF (default):** PiP is allowed normally.
 - **ON:** When the viewing context becomes inactive, the extension will exit any active PiP session and temporarily disable PiP on video elements. PiP is re-enabled when the context becomes active again.
 
+### Auto-Pause for This Tab
+
+- **ON (default):** Auto-pause operates independently for this specific YouTube tab.
+- **OFF:** Videos in this tab continue playing normally in the background when switching tabs or windows. Does not affect any other YouTube tab.
+- Scoped to each individual tab, preserved across page navigations/refreshes while the tab is open, and automatically cleaned up upon tab close.
+
 ### How Settings Are Stored
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `enabled` | `boolean` | `true` | Whether auto-pause/resume is active |
-| `blockPiP` | `boolean` | `false` | Whether PiP is blocked when context is inactive |
+| Key | Storage | Type | Default | Description |
+|---|---|---|---|---|
+| `enabled` | `chrome.storage.local` | `boolean` | `true` | Global auto-pause/resume master switch |
+| `blockPiP` | `chrome.storage.local` | `boolean` | `false` | Global Picture-in-Picture blocking switch |
+| `tab_<tabId>` | `chrome.storage.session` | `boolean` | `true` | Tab-specific auto-pause switch (cleaned up on tab close) |
 
-Settings are stored locally and synced to the content script via `chrome.storage.onChanged` listeners and direct messaging.
+Settings are synced to content scripts via direct tab messaging and `chrome.storage.onChanged` listeners.
 
 ---
 
