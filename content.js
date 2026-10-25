@@ -21,6 +21,8 @@
 
   let enabled = true;
   let blockPiP = false;
+  let tabEnabled = true;
+  let myTabId = null;
   let isWindowFocused = document.hasFocus();
   let isTabActive = !document.hidden;
 
@@ -155,12 +157,12 @@
 
       // ── CRITICAL GUARD ──
       // If the viewing context is NOT active (tab hidden, window unfocused)
-      // and the extension is enabled, this play event was triggered by
-      // YouTube's internal player (DASH rebuffer, ad transition, quality
-      // switch, stream keepalive). Immediately re-pause it synchronously.
+      // and the extension and tab-level auto-pause are enabled, this play event
+      // was triggered by YouTube's internal player (DASH rebuffer, ad transition,
+      // quality switch, stream keepalive). Immediately re-pause it synchronously.
       // This fires on the HTMLMediaElement event, NOT subject to Chrome's
       // 4-second background timer throttling.
-      if (enabled && !isViewingContextActive()) {
+      if (enabled && tabEnabled && !isViewingContextActive()) {
         programmaticPauseSet.add(video);
         extensionPausedSet.add(video);
         try {
@@ -223,7 +225,16 @@
     }
 
     // ─── Auto-Pause / Resume Management ───
-    if (!enabled) return;
+    const shouldAutoPause = enabled && tabEnabled;
+
+    if (!shouldAutoPause) {
+      videos.forEach((video) => {
+        if (extensionPausedSet.has(video)) {
+          playVideoElement(video);
+        }
+      });
+      return;
+    }
 
     if (!active) {
       // Pause playing videos that were not manually paused by the user
@@ -330,11 +341,25 @@
       blockPiP = message.blockPiP;
       reconcilePlaybackState();
       sendResponse({ ok: true, blockPiP });
+    } else if (message.type === 'SET_TAB_ENABLED') {
+      tabEnabled = message.tabEnabled;
+      if (!tabEnabled) {
+        const videos = getVideos();
+        videos.forEach((video) => {
+          if (extensionPausedSet.has(video)) {
+            playVideoElement(video);
+          }
+        });
+      } else {
+        reconcilePlaybackState();
+      }
+      sendResponse({ ok: true, tabEnabled });
     } else if (message.type === 'GET_STATUS') {
       const videos = getVideos();
       sendResponse({
         enabled,
         blockPiP,
+        tabEnabled,
         totalVideos: videos.length,
         playingVideos: getPlayingVideoCount(),
         isContextActive: isViewingContextActive()
@@ -347,7 +372,7 @@
   // ─── Storage Change Listener ──────────────────────────────────────────────
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName === 'local') {
+    if (areaName === 'local' || areaName === 'session') {
       if (changes.enabled) {
         enabled = changes.enabled.newValue;
         if (!enabled) {
@@ -364,6 +389,19 @@
         blockPiP = changes.blockPiP.newValue;
         reconcilePlaybackState();
       }
+      if (myTabId !== null && changes[`tab_${myTabId}`]) {
+        const newTabVal = changes[`tab_${myTabId}`].newValue;
+        tabEnabled = newTabVal !== undefined ? newTabVal : true;
+        if (!tabEnabled) {
+          getVideos().forEach((video) => {
+            if (extensionPausedSet.has(video)) {
+              playVideoElement(video);
+            }
+          });
+        } else {
+          reconcilePlaybackState();
+        }
+      }
     }
   });
 
@@ -374,4 +412,20 @@
     blockPiP = result.blockPiP;
     reconcilePlaybackState();
   });
+
+  // Query background for tab ID and tab-specific auto-pause setting
+  try {
+    chrome.runtime.sendMessage({ type: 'GET_TAB_INIT' }, (response) => {
+      if (chrome.runtime.lastError || !response) return;
+      if (typeof response.tabId === 'number') {
+        myTabId = response.tabId;
+      }
+      if (typeof response.tabEnabled === 'boolean') {
+        tabEnabled = response.tabEnabled;
+        reconcilePlaybackState();
+      }
+    });
+  } catch {
+    // Ignore runtime messaging errors safely
+  }
 })();
