@@ -1,609 +1,218 @@
-## Role
+# AGENTS.md
 
-Act as a senior Chrome Extension engineer specializing in:
+Repo-specific guidance for agents working on **YouTube Auto-Pause Pro**: a Manifest V3
+extension that pauses YouTube playback when the viewing context is left, and resumes only
+what the extension itself paused. Act as a senior Chrome Extension/MV3 engineer; optimize for
+correctness → reliability → maintainability → compatibility → simplicity.
 
-* Chrome Extensions
-* Manifest V3
-* Chromium APIs
-* YouTube SPA behavior
-* DOM event lifecycle
-* Page Visibility API
-* Tab and browser window lifecycle
-* Media element control
-* Extension storage
-* Cross-Chromium compatibility
+User-facing docs live in `README.md`. This file is the working contract.
 
-The objective is to maintain a reliable YouTube auto-pause/resume extension without introducing unnecessary complexity.
+## Repo Facts
 
----
+- **No package manager, build, lint, typecheck, bundler, or CI.** Do not invent `npm test`,
+  `npm run …`, or TypeScript. All files are plain scripts loaded by `manifest.json`/`<script>`.
+- **Only automated check:** `node scripts/test_tab_auto_pause.js`
+  (Node stdlib `assert`, CommonJS, no dependencies, no browser). It passes on the current tree.
+- **Test coverage caveat:** the test `require`s `background.js` for real, but *re-implements*
+  the logic of `content.js` and `popup.js` inline (`createContentScriptInstance`,
+  `simulatePopupUI`). It therefore does **not** execute those two files. After changing
+  pause/resume or popup logic, update the mirror in the test **and** verify manually in Chrome.
+- **Manual load:** `chrome://extensions` → enable Developer mode → **Load unpacked** → select
+  the repo root (the folder containing `manifest.json`).
+- **After every edit:** click **Reload** on the extension card *and* refresh the YouTube tab.
+  Content scripts are not re-injected into already-open tabs. Service-worker changes need the
+  extension reload; popup changes need the popup reopened.
+- **Debugging:** service-worker logs via "Inspect views: service worker"; page logs via DevTools
+  on the YouTube tab; popup logs by right-clicking the popup → Inspect.
+- Version is declared only in `manifest.json`. Keep `CHANGELOG.md` in sync when releasing.
+- `state/` is empty and untracked. `Screenshots/` is user-facing README media.
 
-## Core Product Behavior
+## Where Things Live
 
-The extension automatically controls YouTube playback based on whether the user has left the active YouTube viewing context.
+| Path | Responsibility |
+|---|---|
+| `background.js` | Service worker. Focus/tab signals, per-tab state cleanup, install defaults. No playback decisions. |
+| `content.js` | Single IIFE per YouTube tab. Owns all video discovery, state tracking, pause/resume, PiP control. |
+| `popup.js` / `popup.html` / `popup.css` | Settings UI and live stats. No build step; element IDs are looked up with `getElementById`. |
+| `manifest.json` | MV3 entrypoints, scope, permissions, version. |
+| `scripts/test_tab_auto_pause.js` | The only executable verification. |
 
-### When the user leaves
+Change focus/activation behavior in `background.js`; change playback decisions in
+`content.js`'s `reconcilePlaybackState()`; change settings behavior in `popup.*`.
 
-Pause the video when the user:
+## Architecture
 
-* switches to another tab;
-* switches to another browser window;
-* causes the browser window to lose focus;
-* minimizes the browser when an observable visibility/focus transition occurs.
+Three layers converging on one idempotent function:
 
-### When the user returns
+1. **Background service worker** (`background.js`) listens to `chrome.windows.onFocusChanged`,
+   `chrome.tabs.onActivated`, and `chrome.tabs.onUpdated` (status `complete` + YouTube URL).
+   It queries YouTube tabs and pushes `FOCUS_STATE_UPDATE` via `safeSendMessage()`, which
+   swallows missing-tab errors.
+2. **Content script** (`content.js`) also listens to `document.visibilitychange` and
+   `window.focus`/`blur`. Keeping both sources matters: the DOM signals cover tab/window
+   transitions even if the worker is asleep; the worker covers cases the page cannot observe.
+3. **Popup** (`popup.js`) reads settings from storage, then asks the active YouTube tab for
+   `GET_STATUS`. It must work with no content script present.
 
-Resume playback when the user returns to the YouTube tab/window, but only when the extension itself previously paused the video.
+Every signal follows the same shape: update one or two booleans, then call
+`reconcilePlaybackState()`. That function is the single source of truth, re-derives
+`isViewingContextActive()`, and is safe to run on duplicate events. Do not add independent
+`pause()`/`play()` logic to event handlers; the `play` guard is the only intentional exception.
 
-### Manual pause protection
+### The `play` guard is load-bearing
 
-Never override an explicit user pause.
+`attachVideoListeners()` re-pauses synchronously from the media `play` event when
+`enabled && tabEnabled && !isViewingContextActive()`. This exists because Chromium throttles
+timers in hidden tabs, while media events still fire; YouTube's player regularly calls
+`play()` again (rebuffer, ad transition, quality switch). Never replace this with
+`setInterval`, `setTimeout` retries, or polling, and do not defer the re-pause.
 
-Example:
+### State model
 
-```text
-User manually pauses video
-        ↓
-User leaves YouTube
-        ↓
-User returns
-        ↓
-Video remains paused
-```
+Persisted:
 
-The extension must distinguish:
+| Key | Area | Default | Meaning |
+|---|---|---|---|
+| `enabled` | `chrome.storage.local` | `true` | Global auto-pause master switch |
+| `blockPiP` | `chrome.storage.local` | `false` | Exit/block PiP while context is inactive |
+| `tab_<tabId>` | `chrome.storage.session` | `true` | Per-tab auto-pause; deleted on `tabs.onRemoved` |
 
-```text
-extensionPaused = true
-```
+In-memory in the content script: `enabled`, `blockPiP`, `tabEnabled`, `myTabId`,
+`isWindowFocused`, `isTabActive`, plus `mutationDebounceTimer`.
 
-from:
+Per-element state uses **`WeakSet`s, not booleans or tab-wide flags**:
 
-```text
-userPaused = true
-```
+- `extensionPausedSet` — the extension paused this video, so it may resume it.
+- `userPausedSet` — the user paused it; never auto-resume it.
+- `programmaticPauseSet` / `programmaticPlaySet` — one-shot handshakes consumed by the
+  matching `pause`/`play` listener.
+- `trackedVideos` — prevents duplicate listeners on the same element.
 
-Only the first case may trigger automatic resumption.
+`isViewingContextActive()` = `!document.hidden && isTabActive && isWindowFocused`.
 
----
-
-## Non-Negotiable Requirements
-
-### Manifest
-
-The extension must use:
-
-```json
-"manifest_version": 3
-```
-
-Never introduce Manifest V2 syntax.
-
-Do not use:
-
-* `background.scripts`
-* `persistent`
-* `browser_action`
-* other Manifest V2-only configuration
-
-Use a service worker only if the architecture genuinely requires one.
-
----
-
-## Browser APIs
-
-Evaluate and use the appropriate combination of:
-
-### Page Visibility API
-
-```javascript
-document.hidden
-```
-
-and:
-
-```javascript
-document.addEventListener("visibilitychange", ...)
-```
-
-### Chrome extension APIs
-
-```javascript
-chrome.tabs.onActivated
-chrome.windows.onFocusChanged
-chrome.tabs.query
-```
-
-Use the APIs that provide the strongest signal for the required behavior.
-
-Do not assume one event covers every scenario.
-
-Do not create multiple conflicting sources of truth without a state reconciliation strategy.
-
----
-
-## Event Handling Principles
-
-Several browser events can fire for one user action.
-
-For example:
+Exact gates:
 
 ```text
-switching tabs
-    ↓
-visibilitychange
-    ↓
-tabs.onActivated
+Pause:  !video.paused && !userPausedSet.has(video)
+Resume: video.paused && extensionPausedSet.has(video) && !userPausedSet.has(video)
 ```
 
-or:
-
-```text
-switching windows
-    ↓
-windows.onFocusChanged
-    ↓
-visibilitychange
-```
-
-The implementation must tolerate duplicate signals.
-
-Never perform unnecessary repeated calls such as:
-
-```javascript
-video.pause();
-video.pause();
-video.pause();
-```
-
-or:
-
-```javascript
-video.play();
-video.play();
-video.play();
-```
-
-Use current state checks before changing playback.
-
----
-
-## Playback State Rules
-
-### Pause
-
-Pause only when:
-
-```text
-video exists
-AND video is currently playing
-AND extension is enabled
-AND user has left the viewing context
-```
-
-When the extension pauses the video:
-
-```text
-extensionPaused = true
-```
-
-### Resume
-
-Resume only when:
-
-```text
-video exists
-AND extension is enabled
-AND user has returned
-AND extensionPaused === true
-AND video is still paused
-```
-
-After successfully resuming:
-
-```text
-extensionPaused = false
-```
-
-Do not automatically resume videos that the user manually paused.
-
----
-
-## `HTMLMediaElement.play()` Handling
-
-`video.play()` returns a Promise in modern browsers.
-
-Always account for:
-
-```javascript
-video.play().catch(...)
-```
-
-A failed play attempt must not create an unhandled promise rejection.
-
-Do not treat a failed `play()` call as proof that playback successfully resumed.
-
-Possible failure causes include browser playback policy and media state changes.
-
-Handle failures safely and maintain consistent internal state.
-
----
-
-## YouTube SPA Rules
-
-YouTube is a Single Page Application.
-
-Never assume:
-
-```javascript
-document.querySelector("video")
-```
-
-will always return the same video element.
-
-The `<video>` element may be:
-
-* removed;
-* recreated;
-* replaced;
-* temporarily unavailable;
-* changed during SPA navigation.
-
-The implementation must detect the current video element and recover after navigation.
-
-Appropriate techniques may include:
-
-* `MutationObserver`;
-* checking for the current `<video>`;
-* observing relevant DOM changes;
-* re-binding event listeners when the video element changes.
-
-Do not use aggressive polling such as:
-
-```javascript
-setInterval(..., 100);
-```
-
-unless there is a demonstrated technical reason.
-
-Prefer event-driven logic.
-
----
-
-## Avoid Duplicate Listeners
-
-Before attaching event listeners to a video element or observer:
-
-* ensure the listener is not already attached;
-* detach listeners from old video elements;
-* avoid creating multiple observers;
-* keep references to active observers/listeners where necessary.
-
-A common failure pattern to avoid:
-
-```text
-YouTube navigation
-    ↓
-setupVideo()
-    ↓
-addEventListener()
-    ↓
-another navigation
-    ↓
-setupVideo()
-    ↓
-addEventListener()
-    ↓
-duplicate handlers
-```
-
----
-
-## YouTube Navigation
-
-The extension must continue working after:
-
-* clicking another video;
-* browser back;
-* browser forward;
-* search navigation;
-* YouTube homepage navigation;
-* dynamic page updates;
-* refresh;
-* switching between relevant YouTube page types.
-
-Do not depend exclusively on full page load events.
-
----
-
-## Content Script Scope
-
-The content script should be injected only where necessary.
-
-Prefer scoped host permissions/matches for YouTube rather than broad access.
-
-Avoid:
-
-```json
-"<all_urls>"
-```
-
-unless there is a demonstrated reason it is required.
-
----
-
-## Popup
-
-The popup must be safe to open:
-
-* on YouTube;
-* on non-YouTube pages;
-* before the content script has initialized;
-* after YouTube navigation.
-
-The popup must not crash because a content script is unavailable.
-
-Handle failed `chrome.tabs.sendMessage()` calls gracefully.
-
-If the extension exposes an enable/disable control:
-
-* persist it using `chrome.storage`;
-* restore it when the extension starts;
-* ensure content scripts respect the setting;
-* keep popup UI synchronized with stored state.
-
----
-
-## Storage
-
-Use the minimum required storage.
-
-Possible example:
-
-```javascript
-chrome.storage.local
-```
-
-Do not store transient playback state globally when it can incorrectly affect another YouTube tab.
-
-Playback state such as:
-
-```text
-extensionPaused
-```
-
-should normally be scoped to the relevant tab/content-script context.
-
----
-
-## State Model
-
-A useful conceptual model is:
-
-```text
-enabled
-visibilityState
-windowFocused
-videoElement
-videoPlaying
-extensionPaused
-```
-
-The exact implementation may differ.
-
-Keep state transitions deterministic.
-
-Avoid scattered boolean flags that can become contradictory.
-
----
-
-## Cross-Browser Compatibility
-
-Target modern Chromium-based browsers.
-
-Do not depend on undocumented Chrome behavior.
-
-When a browser-specific difference exists:
-
-1. identify it;
-2. explain it;
-3. implement the most portable solution possible;
-4. avoid browser-specific hacks unless necessary.
-
-The extension must not claim guaranteed support for a Chromium-based browser without validating the required extension APIs.
-
----
-
-## Code Style
-
-Use:
-
-* modern JavaScript;
-* `const` and `let`;
-* clear function names;
-* small, focused functions;
-* defensive null checks;
-* meaningful error handling.
-
-Avoid:
-
-* unnecessary frameworks;
-* unnecessary dependencies;
-* excessive abstraction;
-* global variables without reason;
-* duplicated logic;
-* busy polling;
-* unexplained magic values.
-
-Comments should explain **why**, not restate obvious code.
-
----
-
-## Debugging Workflow
-
-Before modifying code:
-
-### Step 1: Inspect
-
-Read the complete repository.
-
-### Step 2: Trace
-
-Trace the execution flow:
-
-```text
-Manifest
-   ↓
-Content script injection
-   ↓
-Initialization
-   ↓
-Video discovery
-   ↓
-Visibility/focus events
-   ↓
-Pause/resume decision
-   ↓
-YouTube navigation
-   ↓
-Popup communication
-```
-
-### Step 3: Identify
-
-Find the actual failure points.
-
-### Step 4: Fix
-
-Make the smallest architectural change that fully solves the issue.
-
-### Step 5: Verify
-
-Check all critical user flows.
-
----
-
-## Required Testing Matrix
-
-Before considering the task complete, verify:
-
-| Scenario                         | Expected Result                                       |
-| -------------------------------- | ----------------------------------------------------- |
-| Switch YouTube → another tab     | Pause                                                 |
-| Return to YouTube                | Resume if extension paused it                         |
-| Switch to another browser window | Pause                                                 |
-| Return to browser window         | Resume if extension paused it                         |
-| Minimize browser                 | Pause when appropriate visibility/focus signal occurs |
-| Restore browser                  | Resume if extension paused it                         |
-| User manually pauses             | Must remain paused                                    |
-| YouTube SPA navigation           | Extension continues working                           |
-| Browser refresh                  | Extension continues working                           |
-| Multiple YouTube tabs            | State does not leak between tabs                      |
-| Non-YouTube page                 | No runtime errors                                     |
-| Popup on non-YouTube page        | No crash                                              |
-| Rapid focus switching            | No duplicate or unstable state transitions            |
-
----
-
-## Root-Cause Standard
-
-Do not describe a bug merely as:
-
-> "The listener isn't working."
-
-Identify:
-
-1. which listener;
-2. where it is registered;
-3. what event it actually receives;
-4. what state it reads;
-5. what code path runs afterward;
-6. why that path fails in Chromium;
-7. how the replacement fixes the exact failure.
-
-Prefer evidence from the code over assumptions.
-
----
-
-## Completion Criteria
-
-A change is complete only when:
-
-* Manifest V3 is valid.
-* Required permissions are minimal.
-* Content scripts load correctly.
-* YouTube SPA navigation is handled.
-* Video element replacement is handled.
-* Tab switching is handled.
-* Browser window focus changes are handled.
-* Visibility changes are handled where useful.
-* Manual pauses are respected.
-* Extension-initiated pauses can be resumed.
-* Duplicate event handling is controlled.
-* `play()` failures are handled.
-* Popup communication fails safely when no content script exists.
-* No deprecated Manifest V2 APIs/configuration are introduced.
-* The implementation is maintainable and understandable.
-
----
-
-## Final Response Requirements for Coding Agents
-
-When reporting completed work, provide:
-
-### 1. Root Cause Analysis
-
-For each discovered issue:
-
-```text
-File:
-Problem:
-Root Cause:
-Impact:
-Fix:
-```
-
-### 2. Architecture
-
-Explain:
-
-* event sources;
-* state model;
-* video detection;
-* SPA handling;
-* popup communication.
-
-### 3. Changed Files
-
-List every changed file.
-
-### 4. Complete Code
-
-Provide complete contents for every changed file.
-
-Never use placeholders such as:
-
-```text
-// existing code
-```
-
-### 5. Testing
-
-Report which scenarios were verified and any remaining limitations.
-
-### 6. Known Limitations
-
-Be explicit about anything that cannot be guaranteed because of browser policies or platform behavior.
-
----
-
-## Prime Directive
-
-Do not optimize for producing a large amount of code.
-
-Optimize for:
-
-**correctness → reliability → maintainability → compatibility → simplicity**
-
-Do not rewrite functioning code without a technical reason.
-
-Do not claim that a fix works unless the implementation supports that conclusion.
+`playVideoElement()` deletes `extensionPausedSet` before calling `play()` and re-adds it if the
+promise rejects, so a later reconcile can retry. Preserve that failure path.
+
+## Messaging Protocol
+
+| Type | Direction | Payload / reply |
+|---|---|---|
+| `GET_TAB_INIT` | content → background | reply `{ tabId, tabEnabled }`; handler returns `true` |
+| `FOCUS_STATE_UPDATE` | background → content | `{ windowFocused?, tabActive? }` — **partial updates** |
+| `SET_ENABLED` | popup → content | `{ enabled }` |
+| `SET_BLOCK_PIP` | popup → content | `{ blockPiP }` |
+| `SET_TAB_ENABLED` | popup → content | `{ tabEnabled }` |
+| `GET_STATUS` | popup → content | reply `{ enabled, blockPiP, tabEnabled, totalVideos, playingVideos, isContextActive }` |
+
+- A `FOCUS_STATE_UPDATE` omitting `windowFocused` or `tabActive` means **unchanged**, not
+  `false`. The content handler already applies only boolean fields; keep that.
+- Content listeners `return true` to keep the async channel open. Keep replies synchronous
+  where they already are.
+- Dual delivery (storage `onChanged` + direct `sendMessage`) is intentional and idempotent.
+  Popup writes storage first, then best-effort messages; it must not depend on delivery.
+
+## Non-Negotiable Constraints
+
+- **Manifest V3 only.** No `background.scripts`, `persistent`, `browser_action`, or MV2 APIs.
+- **Minimal scope:** permissions `storage` and `tabs`; host/content matches limited to
+  `*://*.youtube.com/*`. Do not add `<all_urls>`, `scripting`, or broad host access.
+- **Per-tab isolation.** Never move `tab_<tabId>` state to `chrome.storage.local` and never
+  store playback state in a service-worker global (workers are ephemeral). Multiple YouTube
+  tabs must not affect each other.
+- **`chrome.storage.session` access level.** `background.js` calls
+  `setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' })` on install so content
+  scripts can read tab state. Keep the `setAccessLevel` feature check and the
+  `chrome.storage.session || chrome.storage.local` fallback in both `background.js` and
+  `popup.js`.
+- **Manual pause wins.** A non-programmatic `pause` while the context is active marks the
+  video in `userPausedSet`. Disabling extension/tab auto-pause must resume only videos in
+  `extensionPausedSet`; never resurrect a manual pause.
+- **Multiple videos.** `getVideos()` returns *all* `<video>` elements. Do not replace it with
+  `document.querySelector('video')`; playlists/embeds can expose several.
+- **Duplicate signals are normal.** Never assume one action produces one event, and never
+  call `pause()`/`play()` without the state checks above.
+- **YouTube SPA.** Video elements are created/replaced. Handle `yt-navigate-finish`,
+  `spadated`, and `popstate` (immediate + 200 ms reconcile). The `MutationObserver` on
+  `document.documentElement` is discovery-only, debounced 100 ms; do not turn it into a
+  general-purpose action trigger.
+- **Popup safety.** `init()` must never throw: non-YouTube tabs show `—` and a disabled tab
+  toggle; missing content script yields `null` status. Wrap `chrome.tabs.sendMessage` in
+  `try/catch`.
+- **`video.play()` returns a promise.** Always handle rejection and keep internal state
+  consistent; never treat a call as proof playback resumed.
+- **Chromium target.** `PROMPT.md` names Chrome, Comet, and other Chromium browsers. Do not
+  claim support for a browser you have not loaded the unpacked build in; `disablePictureInPicture`
+  and PiP APIs are the usual portability limits.
+
+## Docs Drift — Trust Code, Not Prose
+
+`README.md` predates v2.3.0 and is wrong in places:
+
+- Its sequence diagrams mention `isProcessingAction` and `broadcastFocusState()`. Neither
+  exists; the real names are `programmaticPauseSet`/`programmaticPlaySet` and
+  `notifyYouTubeTabs()`.
+- Its diagrams assume one video and no per-tab toggle. The code handles many videos plus
+  `tabEnabled` and `blockPiP`.
+- Its project structure omits `scripts/`, `CHANGELOG.md`, `CONTRIBUTING.md`, `PROMPT.md`,
+  and `LICENSE`.
+
+`CHANGELOG.md` jumps from 1.3.0 to 2.3.0. `PROMPT.md` is a historical prompt log, not a spec.
+`content.js` also listens for a custom `spadated` event allowlisted in `.vscode/settings.json`;
+verify against live YouTube before renaming it.
+
+When docs and code disagree, the code is authoritative — then fix the doc rather than
+"fixing" the code to match it.
+
+## Verification
+
+Automated: `node scripts/test_tab_auto_pause.js`.
+
+Manual matrix (the test only simulates part of this):
+
+| Scenario | Expected |
+|---|---|
+| Switch YouTube → another tab | Pause |
+| Return to YouTube | Resume only if extension paused it |
+| Switch to another browser window | Pause |
+| Return to browser window | Resume only if extension paused it |
+| Minimize / restore browser | Pause/resume on the observable visibility or focus signal |
+| User manually pauses, leaves, returns | Stays paused |
+| YouTube SPA navigation (click video, back/forward) | Extension keeps working on the new video |
+| Browser refresh | Extension keeps working |
+| Multiple YouTube tabs | No state leak; each tab independent |
+| Per-tab toggle OFF on one tab | That tab keeps playing while another tab still pauses |
+| `blockPiP` ON | Active PiP exits and re-entry is blocked while inactive; restored when active |
+| Non-YouTube page / popup there | No runtime errors; stats show `—` |
+| Rapid focus switching | No duplicate or unstable pause/play transitions |
+
+The test cannot prove real YouTube behavior, DOM replacement timing, or PiP support. Say so
+explicitly when reporting.
+
+## Reporting Completed Work
+
+1. **Root cause** per issue:
+   ```text
+   File:
+   Problem:
+   Root Cause:
+   Impact:
+   Fix:
+   ```
+   Name the listener/function, the event it actually receives, the state it reads, and the
+   failing path. "The listener isn't working" is not a root cause.
+2. **Architecture** summary if behavior changed (event sources, state, video discovery, SPA,
+   messaging).
+3. **Changed files**, then the **complete contents** of each changed file — no snippets and no
+   `// existing code` placeholders (established convention in `PROMPT.md`).
+4. **Testing:** what was actually run or manually verified, and what was not.
+5. **Known limitations** (autoplay policy, YouTube DOM/PiP, untested browsers).
+
+Do not rewrite functioning code without a technical reason, and do not claim a fix works
+unless the implementation and verification support it.
