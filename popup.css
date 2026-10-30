@@ -141,6 +141,11 @@ input:checked + .slider::before {
   box-shadow: 0 1px 6px rgba(34,197,94,0.5);
 }
 
+input:disabled + .slider {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
 /* ── Stats Row ── */
 .stats-row {
   display: flex;

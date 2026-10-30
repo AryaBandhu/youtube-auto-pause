@@ -70,7 +70,17 @@ All notable changes to the YouTube Auto-Pause Chrome Extension are documented in
 - **AGENTS.md** — development guidelines and coding standards for AI coding agents.
 - **PROMPT.md** — project requirements and technical specifications.
 - **README.md** — comprehensive documentation covering installation, configuration, usage, troubleshooting, and contributing guidelines.
-- **CHANGELOG.md** — this file, tracking version history.
+## [2.3.0] - 2026-10-24
+
+### Added
+
+- **Per-Tab Selective Auto-Pause Control** — added "Auto-Pause for This Tab" toggle in popup directly below Picture-in-Picture.
+  - Allows controlling auto-pause independently for each YouTube tab.
+  - Tabs with auto-pause disabled continue playback normally in background on tab or window switch.
+  - Each tab's state is preserved while the tab remains open (including refreshes and SPA navigations).
+  - Background service worker listens to `chrome.tabs.onRemoved` and automatically cleans up tab-scoped storage.
+  - Manual pause protection is strictly maintained across all per-tab state transitions.
+  - Popup gracefully disables tab toggle with clear indicator on non-YouTube pages.
 
 ---
 

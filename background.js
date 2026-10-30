@@ -8,9 +8,19 @@
 
 'use strict';
 
+// ─── Storage Helpers ────────────────────────────────────────────────────────
+
+function getTabStorage() {
+  return chrome.storage.session || chrome.storage.local;
+}
+
 // ─── Storage Initialization ──────────────────────────────────────────────────
 
 chrome.runtime.onInstalled.addListener(async () => {
+  if (chrome.storage?.session?.setAccessLevel) {
+    chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' }).catch(() => {});
+  }
+
   const data = await chrome.storage.local.get(['enabled', 'blockPiP']);
   const updates = {};
   if (data.enabled === undefined) updates.enabled = true;
@@ -101,5 +111,30 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
         tabActive: tab.active
       });
     }).catch(() => {});
+  }
+});
+
+// Clean up per-tab state when tab is closed
+chrome.tabs.onRemoved.addListener((tabId) => {
+  getTabStorage().remove(`tab_${tabId}`).catch(() => {});
+});
+
+// Handle content script tab initialization and handshake
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'GET_TAB_INIT') {
+    const tabId = sender.tab?.id;
+    if (!tabId) {
+      sendResponse({ tabEnabled: true });
+      return false;
+    }
+
+    getTabStorage().get([`tab_${tabId}`]).then((result) => {
+      const tabEnabled = result[`tab_${tabId}`] !== undefined ? result[`tab_${tabId}`] : true;
+      sendResponse({ tabId, tabEnabled });
+    }).catch(() => {
+      sendResponse({ tabId, tabEnabled: true });
+    });
+
+    return true; // Keep message channel open for async response
   }
 });
